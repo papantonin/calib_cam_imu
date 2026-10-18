@@ -1,0 +1,10 @@
+# Native AprilTag 3 grid; NOT the historical 2-bit-border Kalibr target.
+# Geometry in metres, size measured across the square whose corners are detected.
+target_type: aprilgrid
+tagRows: 6
+tagCols: 6
+tagSize: 0.04
+tagSpacing: 0.3
+tagFamily: tag36h11
+tagBorderBits: 1
+tagStartId: 0

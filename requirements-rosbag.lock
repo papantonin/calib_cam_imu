@@ -1,0 +1,8 @@
+# Optional ROS1 extraction tools; locked wheels for CPython 3.14, Linux x86_64.
+# Regenerate deliberately when upgrading Python/platform or dependencies.
+rosbags==0.11.8 --hash=sha256:017ada9c2f24d8a2e626e48a3c4f20f53e03516a14c079294feff3e1fea6cf99
+pillow==12.3.0 --hash=sha256:251bf95b67017e27b13d82f5b326234ca62d70f9cf4c2b9032de2358a3b12c7b
+apsw==3.54.0.0 --hash=sha256:d06a1d84a74cb78ec124f77ddef31ca047fe9752b61485d0baff330b6bf68d5e
+lz4==4.4.5 --hash=sha256:0bba042ec5a61fa77c7e380351a61cb768277801240249841defd2ff0a10742f
+numpy==2.5.4 --hash=sha256:d549420b8858885cea8838a727842249218b9c1da24dd517e25c9c7a948310a3
+ruamel.yaml==0.19.1 --hash=sha256:27592957fedf6e0b62f281e96effd28043345e0e66001f97683aa9a40c667c93

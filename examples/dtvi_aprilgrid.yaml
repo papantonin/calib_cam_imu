@@ -1,0 +1,10 @@
+# Shared target for DTVI 512/1024 and Oxford Spires 2024-10-29.
+# Same physical grid confirmed by the user; legacy tag36h11 black border.
+target_type: aprilgrid
+tagCols: 6
+tagRows: 6
+tagSize: 0.088
+tagSpacing: 0.3
+tagFamily: tag36h11
+tagBorderBits: 2
+tagStartId: 0

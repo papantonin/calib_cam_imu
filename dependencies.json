@@ -1,0 +1,30 @@
+{
+  "ceres": {
+    "version": "2.2.0",
+    "repository": "https://github.com/ceres-solver/ceres-solver",
+    "commit": "85331393dc0dff09f6fb9903ab0c4bfa3e134b01",
+    "url": "https://codeload.github.com/ceres-solver/ceres-solver/tar.gz/85331393dc0dff09f6fb9903ab0c4bfa3e134b01",
+    "sha256": "4cdd9f11f5afb34f8c9a043396a574b4a0a888f866710e7d65acb5b88ce64bcb",
+    "archive": "ceres-2.2.0.tar.gz",
+    "verified_on": "2026-10-17"
+  },
+  "opencv": {
+    "version": "5.0.0",
+    "repository": "https://github.com/opencv/opencv",
+    "commit": "40738fb16ceddb5fb3fea747585f7ce6abb0605b",
+    "url": "https://codeload.github.com/opencv/opencv/tar.gz/40738fb16ceddb5fb3fea747585f7ce6abb0605b",
+    "sha256": "23affb17b8f7a46517a62b5e9fa637a8bc660acb5460bef9f130ee939df01ebb",
+    "archive": "opencv-5.0.0.tar.gz",
+    "verified_on": "2026-10-17"
+  },
+  "apriltag": {
+    "version": "3.4.5",
+    "repository": "https://github.com/AprilRobotics/apriltag",
+    "commit": "94be783968e5091bcc9972c72c84fd63efce2935",
+    "url": "https://codeload.github.com/AprilRobotics/apriltag/tar.gz/94be783968e5091bcc9972c72c84fd63efce2935",
+    "sha256": "9cd32cbdafab30e34609eb141376d4288cfea6c3c0b3a24eb01e0d8ae5291226",
+    "archive": "apriltag-3.4.5.tar.gz",
+    "verified_on": "2026-10-15",
+    "observed_master": "b7c0ebe9aa20f82ec7a828579004f9e706bfecd9"
+  }
+}

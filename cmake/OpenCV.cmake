@@ -1,0 +1,18 @@
+# Isolated, locally built calibration backend. Never silently use system OpenCV.
+file(READ "${PROJECT_SOURCE_DIR}/dependencies.json" opencv_lock)
+string(JSON CALIB_OPENCV_VERSION GET "${opencv_lock}" opencv version)
+string(JSON opencv_commit GET "${opencv_lock}" opencv commit)
+set(opencv_prefix "${PROJECT_SOURCE_DIR}/.deps/opencv-install-${opencv_commit}")
+if(NOT EXISTS "${opencv_prefix}/calib-provenance.json")
+  message(FATAL_ERROR "Missing locked OpenCV build. Run scripts/install_dependencies.sh --sources-only")
+endif()
+file(READ "${opencv_prefix}/calib-provenance.json" opencv_provenance)
+string(JSON built_commit GET "${opencv_provenance}" dependency commit)
+string(JSON built_hash GET "${opencv_provenance}" dependency sha256)
+string(JSON expected_hash GET "${opencv_lock}" opencv sha256)
+if(NOT built_commit STREQUAL opencv_commit OR NOT built_hash STREQUAL expected_hash)
+  message(FATAL_ERROR "OpenCV build provenance does not match dependencies.json")
+endif()
+set(OpenCV_DIR "${opencv_prefix}/lib/cmake/opencv5")
+find_package(OpenCV ${CALIB_OPENCV_VERSION} EXACT REQUIRED CONFIG COMPONENTS core calib geometry
+  PATHS "${opencv_prefix}" NO_DEFAULT_PATH)
