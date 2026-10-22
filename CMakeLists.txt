@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 project(cam_imu_calib VERSION 0.1.0 LANGUAGES C CXX)
+include(GNUInstallDirs)
 set(CALIB_CXX_STANDARD 26 CACHE STRING "C++ standard (26, or explicit fallback 23)")
 if(NOT CALIB_CXX_STANDARD MATCHES "^(23|26)$")
   message(FATAL_ERROR "CALIB_CXX_STANDARD must be 23 or 26")
@@ -16,6 +17,12 @@ endif()
 find_package(PNG REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
+find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
+execute_process(COMMAND ${Python3_EXECUTABLE} -c "import matplotlib, numpy"
+  RESULT_VARIABLE report_python_status ERROR_QUIET)
+if(NOT report_python_status EQUAL 0)
+  message(FATAL_ERROR "Camera-IMU PDF reports require matplotlib and numpy for ${Python3_EXECUTABLE}; see INSTALLATION.md")
+endif()
 find_package(CLI11 2.3 CONFIG REQUIRED)
 find_package(yaml-cpp 0.8 CONFIG REQUIRED)
 find_package(nlohmann_json 3.11 CONFIG REQUIRED)
@@ -38,15 +45,31 @@ target_compile_options(calib_initialization PRIVATE -Wall -Wextra -Wpedantic -Wc
 add_library(calib_rig src/rig.cpp src/rig_io.cpp)
 target_link_libraries(calib_rig PUBLIC calib_initialization PRIVATE Ceres::ceres yaml-cpp::yaml-cpp)
 target_compile_options(calib_rig PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+add_library(calib_vi src/vi.cpp src/vi_io.cpp)
+target_link_libraries(calib_vi PUBLIC calib_initialization PRIVATE Ceres::ceres yaml-cpp::yaml-cpp)
+target_compile_definitions(calib_vi PRIVATE
+  CALIB_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
+  CALIB_VI_REPORT_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/scripts/render_vi_report.py"
+  CALIB_VI_REPORT_INSTALL_PATH="${CMAKE_INSTALL_FULL_DATADIR}/${PROJECT_NAME}/render_vi_report.py"
+  CALIB_VI_REPORT_INSTALL_RELATIVE="${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}/render_vi_report.py")
+target_compile_options(calib_vi PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
 foreach(command IN ITEMS calib_cameras calib_imu_camera)
   add_executable(${command} src/main.cpp)
-  target_link_libraries(${command} PRIVATE calib_rig CLI11::CLI11)
+  target_link_libraries(${command} PRIVATE calib_rig calib_vi CLI11::CLI11)
   target_compile_options(${command} PRIVATE -Wall -Wextra -Wpedantic)
 endforeach()
 target_compile_definitions(calib_imu_camera PRIVATE CALIB_REQUIRE_IMU=1)
+install(TARGETS calib_cameras calib_imu_camera
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  COMPONENT Runtime)
+install(PROGRAMS scripts/render_vi_report.py
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}
+  COMPONENT Runtime)
+install(FILES examples/aprilgrid.yaml examples/dtvi_aprilgrid.yaml
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}/examples
+  COMPONENT Runtime)
 include(CTest)
 if(BUILD_TESTING)
-  find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
   add_executable(calib_tests tests/unit.cpp)
   target_link_libraries(calib_tests PRIVATE calib_core apriltag PNG::PNG)
   add_test(NAME core COMMAND calib_tests)
@@ -72,6 +95,36 @@ if(BUILD_TESTING)
   find_program(PDFTOTEXT_EXECUTABLE pdftotext REQUIRED)
   add_test(NAME rig_calibration COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/rig.py $<TARGET_FILE:rig_test_bridge> ${PDFINFO_EXECUTABLE} ${PDFTOTEXT_EXECUTABLE})
   set_tests_properties(rig_calibration PROPERTIES TIMEOUT 300)
+  add_executable(vi_residual_tests tests/vi_residual.cpp)
+  target_include_directories(vi_residual_tests PRIVATE include)
+  target_link_libraries(vi_residual_tests PRIVATE Ceres::ceres)
+  add_test(NAME vi_derivatives COMMAND vi_residual_tests)
+  add_executable(vi_cost_tests tests/vi_cost.cpp)
+  target_include_directories(vi_cost_tests PRIVATE include)
+  target_link_libraries(vi_cost_tests PRIVATE Ceres::ceres)
+  add_test(NAME vi_cost_derivatives COMMAND vi_cost_tests)
+  add_executable(vi_test_bridge tests/vi_bridge.cpp)
+  target_link_libraries(vi_test_bridge PRIVATE calib_vi)
+  foreach(vi_case IN ITEMS positive negative noisy bias guards)
+    add_test(NAME vi_calibration_${vi_case} COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/vi.py $<TARGET_FILE:vi_test_bridge> ${vi_case})
+    set_tests_properties(vi_calibration_${vi_case} PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)
+  endforeach()
+  if(NOT CALIB_SANITIZERS)
+    add_test(NAME vi_calibration_boundary COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/vi.py $<TARGET_FILE:vi_test_bridge> boundary)
+    add_test(NAME vi_covariance_smoke COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/qualify_vi_covariance.py
+      --bridge $<TARGET_FILE:vi_test_bridge> --trials 3 --require-successes 3
+      --output ${CMAKE_CURRENT_BINARY_DIR}/vi-covariance-smoke.json)
+    add_test(NAME vi_intrinsics_sensitivity_smoke COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/benchmark_vi_intrinsics_sensitivity.py
+      --bridge $<TARGET_FILE:vi_test_bridge> --max-cases 2 --require-successes 2
+      --output ${CMAKE_CURRENT_BINARY_DIR}/vi-intrinsics-sensitivity-smoke.json)
+    add_test(NAME vi_bootstrap_smoke COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/vi.py $<TARGET_FILE:vi_test_bridge> bootstrap)
+    set_tests_properties(vi_calibration_boundary vi_covariance_smoke vi_intrinsics_sensitivity_smoke vi_bootstrap_smoke
+      PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+  endif()
   add_executable(project_test_camera tests/project_camera.cpp)
   target_link_libraries(project_test_camera PRIVATE calib_core)
   option(CALIB_OPENCV_TESTS "Compare optical models against Python OpenCV (test dependency only)" OFF)
@@ -92,7 +145,7 @@ if(BUILD_TESTING)
   add_test(NAME dependency_lock COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/dependencies.py)
   set_tests_properties(cli_integration PROPERTIES TIMEOUT 120)
   if(CALIB_SANITIZERS)
-    set_tests_properties(core observations camera_models initialization initialization_selection rig_derivatives rig_calibration cli_integration png16 PROPERTIES ENVIRONMENT
+    set_tests_properties(core observations camera_models initialization initialization_selection rig_derivatives rig_calibration vi_derivatives vi_cost_derivatives vi_calibration_positive vi_calibration_negative vi_calibration_noisy vi_calibration_guards cli_integration png16 PROPERTIES ENVIRONMENT
       "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;ASAN_OPTIONS=detect_leaks=1:halt_on_error=1")
     if(CALIB_OPENCV_TESTS)
       set_tests_properties(camera_models_opencv PROPERTIES ENVIRONMENT

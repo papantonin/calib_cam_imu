@@ -26,6 +26,10 @@ std::vector<FrameObservations> InitialViewSampler::selected() const {
   return frames;
 }
 namespace {
+void configure_backend() {
+  static std::once_flag configured;
+  std::call_once(configured,[]{cv::setNumThreads(1);});
+}
 struct View {
   std::int64_t timestamp{};
   std::vector<cv::Point3d> object;
@@ -151,8 +155,7 @@ double check_inverse(const CameraModel& camera,const Fit& fit,double radius) {
 InitialCalibration initialize_camera(const AprilGridGeometry& geometry,std::span<const FrameObservations> frames,
                                       DistortionModel kind,const std::function<bool()>& cancelled) {
   if(frames.size()<10 || frames.size()>200) throw Error(3,"Initialization requires 10 to 200 eligible views per camera");
-  static std::once_flag configured;
-  std::call_once(configured,[]{cv::setNumThreads(1);});
+  configure_backend();
   const auto size=frames.front().resolution;
   if(!size[0] || !size[1] || size[0]>32768 || size[1]>32768) throw Error(2,"Invalid initialization resolution");
   InitialCalibration result; result.selected_views=frames.size();
@@ -263,6 +266,7 @@ InitialCalibration initialize_camera(const AprilGridGeometry& geometry,std::span
   return result;
 }
 InitialPose estimate_target_pose(const AprilGridGeometry& geometry,const FrameObservations& frame,const CameraCalibration& camera) {
+  configure_backend();
   if(frame.corners.size()<12 || frame.camera!=camera.id || frame.resolution!=std::array<std::uint32_t,2>{camera.width,camera.height})
     throw Error(3,"Target pose requires twelve corners and matching camera/resolution");
   const auto optical=make_camera_model(camera);

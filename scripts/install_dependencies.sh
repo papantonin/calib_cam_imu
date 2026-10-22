@@ -6,7 +6,7 @@ install_system=1
 download_sources=1
 optional_packages=()
 case "${1:-}" in
-  --optical-test-tools) download_sources=0; optional_packages=(python3-opencv python3-numpy) ;;
+  --optical-test-tools) download_sources=0; optional_packages=(python3-opencv) ;;
   --rosbag-tools)
     if (( $# != 1 )); then echo "Too many arguments" >&2; exit 2; fi
     python3 "$project_root/scripts/setup_rosbag_tools.py"
@@ -31,7 +31,7 @@ if (( install_system )); then
   if (( EUID != 0 )); then privilege=(sudo); fi
   "${privilege[@]}" apt-get update
   "${privilege[@]}" apt-get install -y --no-install-recommends \
-    g++ cmake ninja-build pkg-config ca-certificates curl python3 poppler-utils \
+    g++ cmake ninja-build pkg-config ca-certificates curl python3 python3-matplotlib python3-numpy poppler-utils \
     libcli11-dev libyaml-cpp-dev libpng-dev zlib1g-dev nlohmann-json3-dev libeigen3-dev "${optional_packages[@]}"
 fi
 if (( download_sources )); then
@@ -41,6 +41,6 @@ if (( download_sources )); then
 fi
 mkdir -p "$project_root/.deps"
 dpkg-query -W -f='${binary:Package}\t${Version}\n' \
-  g++ cmake ninja-build poppler-utils libcli11-dev libyaml-cpp-dev libpng-dev zlib1g-dev nlohmann-json3-dev libeigen3-dev "${optional_packages[@]}" \
+  g++ cmake ninja-build python3-matplotlib python3-numpy poppler-utils libcli11-dev libyaml-cpp-dev libpng-dev zlib1g-dev nlohmann-json3-dev libeigen3-dev "${optional_packages[@]}" \
   > "$project_root/.deps/system-versions.txt"
 echo "Dependency setup complete. See INSTALLATION.md for build and tests."

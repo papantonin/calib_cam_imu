@@ -89,6 +89,20 @@ with tempfile.TemporaryDirectory(prefix='calib-test-') as temporary:
     inspect(data, extra=('--quad-decimate',2), code=2)
     inspect(data, VI, code=5)
     imu(data)
+    noise=base/'imu-noise.yaml'
+    noise.write_text('gyroscope_noise_density: 0.002\naccelerometer_noise_density: 0.02\n')
+    run(VI,'--dataset',data,code=2)
+    run(VI,'--dataset',data,'--check-dataset','--imu',noise,code=2)
+    run(CAM,*rig_args,'--imu',noise,'--output',base/'invalid-vi-command',code=2)
+    run(VI,*rig_args,'--imu',noise,'--output',base/'multiple-vi-cameras',code=2)
+    bad_noise=base/'bad-imu-noise.yaml'
+    bad_noise.write_text('gyroscope_noise_density: 0\naccelerometer_noise_density: 0.02\n')
+    run(VI,*rig_args,'--cameras','cam2','--imu',bad_noise,'--output',base/'invalid-noise',code=2)
+    for invalid_noise in ['[]\n','gyroscope_noise_density: 0.002\ngyroscope_noise_density: 0.003\naccelerometer_noise_density: 0.02\n']:
+        bad_noise.write_text(invalid_noise)
+        run(VI,*rig_args,'--cameras','cam2','--imu',bad_noise,'--output',base/'invalid-noise',code=2)
+    bad_noise.write_text('gyroscope_noise_density: 0.002\naccelerometer_noise_density: 0.02\ngyroscope_random_walk: 0.001\n')
+    run(VI,*rig_args,'--cameras','cam2','--imu',bad_noise,'--output',base/'invalid-noise',code=2)
     vi = inspect(data, VI)
     assert vi['imu']['samples']==31
     assert abs(vi['imu']['mean'][5]-9.81)<1e-12
@@ -125,6 +139,16 @@ with tempfile.TemporaryDirectory(prefix='calib-test-') as temporary:
         chain.write_text('cam2:\n'+camera_yaml+'  '+delay+'\ncam10:\n'+camera_yaml)
         result = inspect(data,extra=('--cam',chain))
         assert abs(result['camchain'][0]['readout_time_s']-479*abs(result['camchain'][0]['line_delay_s']))<1e-14
+    vi_args=('--dataset',data,'--target',init_target,'--cameras','cam2','--cam',chain,'--imu',noise)
+    run(VI,*vi_args,'--models','pinhole-equi','--output',base/'vi-optics-conflict',code=2)
+    run(VI,*vi_args,'--init-max-views',30,'--output',base/'vi-unused-views',code=2)
+    run(VI,*vi_args,'--vi-bootstrap-replicates',8,'--output',base/'vi-bootstrap-missing-block',code=2)
+    run(VI,*vi_args,'--vi-bootstrap-block-seconds',1,'--output',base/'vi-bootstrap-missing-count',code=2)
+    run(VI,*vi_args,'--vi-bootstrap-seed',7,'--output',base/'vi-bootstrap-unused-seed',code=2)
+    run(CAM,*rig_args,'--vi-bootstrap-replicates',8,'--vi-bootstrap-block-seconds',1,
+        '--output',base/'rig-bootstrap-option',code=2)
+    chain.write_text('cam2:\n'+camera_yaml+'  line_delay: 1e-5\n')
+    run(VI,*vi_args,'--output',base/'vi-rolling-shutter',code=8)
     chain.write_text('cam2:\n'+camera_yaml+'  line_delay: 1e-5\n  lineDelay: 2e-5\n')
     inspect(data,extra=('--cam',chain),code=2)
     chain.write_text('cam2:\n'+camera_yaml+'  line_delay: 1e-5\n  line_delay: 1e-5\n')

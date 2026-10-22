@@ -30,6 +30,7 @@ def main():
     build=ROOT/'.deps'/('ceres-build-'+lock['commit'])
     install=ROOT/'.deps'/('ceres-install-'+lock['commit'])
     options=dict(CMAKE_BUILD_TYPE='Release',CMAKE_CXX_STANDARD='17',CMAKE_INSTALL_PREFIX=str(install),
+        CMAKE_CXX_FLAGS='-DEIGEN_MALLOC_ALREADY_ALIGNED=0',
         BUILD_SHARED_LIBS='OFF',BUILD_TESTING='OFF',BUILD_EXAMPLES='OFF',BUILD_BENCHMARKS='OFF',
         MINIGLOG='ON',GFLAGS='OFF',SUITESPARSE='OFF',LAPACK='OFF',USE_CUDA='OFF',
         EIGENSPARSE='ON',SCHUR_SPECIALIZATIONS='OFF',EXPORT_BUILD_DIR='OFF')

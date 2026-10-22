@@ -2,6 +2,7 @@
 #include "calib/observations.hpp"
 #include "calib/initialization.hpp"
 #include "calib/rig.hpp"
+#include "calib/vi.hpp"
 #include <CLI/CLI.hpp>
 #include <algorithm>
 #include <atomic>
@@ -36,11 +37,12 @@ int main(int argc, char** argv) {
 #else
   constexpr bool require_imu=false;
 #endif
-  CLI::App app("Camera calibration: automatic synchronized GS camera-camera solve, inspection and initialization. IMU/RS solve not yet implemented.");
+  CLI::App app("Global-shutter camera-camera and single-camera IMU calibration, inspection and initialization. Rolling shutter solve is not implemented.");
   app.set_version_flag("--version",std::string(CALIB_VERSION)+"; AprilTag "+CALIB_APRILTAG_VERSION+" ("+CALIB_APRILTAG_COMMIT+")");
-  std::string dataset_path, target_path, cam_path, output_path, tag_family;
+  std::string dataset_path, target_path, cam_path, output_path, tag_family,imu_path;
   std::vector<std::string> cameras,models;
-  bool check=false, detect=false, initialize=false, solve_rig=false;
+  bool check=false, detect=false, initialize=false, solve_rig=false,solve_vi=false;
+  ViOptions vi_options;
   unsigned init_max_views=60;
   unsigned threads=0, memory_mib=1024;
   double decimate=1.0;
@@ -58,6 +60,18 @@ int main(int argc, char** argv) {
   app.add_option("--tag-family",tag_family,"Diagnostic detection without target geometry: tag36h11 or tagStandard41h12")->excludes(target_option);
   auto border_option=app.add_option("--tag-border-bits",tag_border_bits,"Diagnostic tag border: 1 native, 2 legacy tag36h11")->check(CLI::Range(1,2));
   app.add_option("--cam",cam_path,"Inspect camchain intrinsics, resolution and signed line_delay");
+  auto imu_option=app.add_option("--imu",imu_path,"VI noise YAML: measurement noise and optional gyro/accel bias random walks");
+  auto knot_option=app.add_option("--vi-knot-interval",vi_options.knot_interval_s,"VI spline knot interval in seconds")->check(CLI::Range(0.02,1.0));
+  auto bias_knot_option=app.add_option("--vi-bias-knot-interval",vi_options.bias_knot_interval_s,
+    "Piecewise-linear bias knot interval in seconds when random walks are positive")->check(CLI::Range(0.02,10.0));
+  auto offset_option=app.add_option("--vi-max-offset",vi_options.max_offset_s,"Positive absolute camera-IMU offset search bound, seconds")->check(CLI::Range(0.001,0.5));
+  auto sigma_option=app.add_option("--vi-pixel-sigma",vi_options.pixel_sigma,"VI visual corner standard deviation in pixels")->check(CLI::Range(0.01,10.0));
+  auto bootstrap_option=app.add_option("--vi-bootstrap-replicates",vi_options.bootstrap_replicates,
+    "Explicit temporal block-bootstrap replicates; 0 disables it")->check(CLI::Range(8,128));
+  auto bootstrap_block_option=app.add_option("--vi-bootstrap-block-seconds",vi_options.bootstrap_block_s,
+    "Required temporal block duration when VI bootstrap is enabled")->check(CLI::Range(0.1,60.0));
+  auto bootstrap_seed_option=app.add_option("--vi-bootstrap-seed",vi_options.bootstrap_seed,
+    "Deterministic VI bootstrap seed");
   app.add_option("--output",output_path,"New output directory (required for detection/initialization/calibration; never overwritten)");
   app.add_option("--threads",threads,"Global CPU budget for images, initialization and solver; 0 = hardware concurrency")->check(CLI::Range(0,256));
   app.add_option("--memory-budget-mb",memory_mib,"Estimated image workspace budget, not a hard RSS cap")->check(CLI::Range(32,65536));
@@ -67,13 +81,29 @@ int main(int argc, char** argv) {
   bool output_created=false;
   try {
     if(!check && !detect && !initialize) {
-      if(require_imu) throw Error(8,"IMU calibration solver is not implemented yet. Use --check-dataset, --detect-only or --initialize-only.");
-      solve_rig=true; initialize=true;
+      solve_vi=require_imu; solve_rig=!require_imu; initialize=true;
     }
-    if(initialize && (target_path.empty() || output_path.empty() || models.empty()))
-      throw Error(2,"Camera calibration/initialization requires --target, --models and --output");
+    if(!solve_vi && (imu_option->count() || knot_option->count() || bias_knot_option->count() || offset_option->count() || sigma_option->count() ||
+        bootstrap_option->count() || bootstrap_block_option->count() || bootstrap_seed_option->count()))
+      throw Error(2,"--imu and --vi-* options require camera-IMU calibration mode");
+    if(solve_vi) {
+      if(imu_path.empty()) throw Error(2,"Camera-IMU calibration requires --imu noise.yaml");
+      vi_options.noise=read_vi_noise(imu_path);
+      const bool gyro_random_walk=vi_options.noise.gyroscope_random_walk>0;
+      const bool accel_random_walk=vi_options.noise.accelerometer_random_walk>0;
+      if(gyro_random_walk!=accel_random_walk)
+        throw Error(2,"VI noise YAML must provide both positive gyro/accel random walks, or neither for constant biases");
+      if(!cam_path.empty() && !models.empty()) throw Error(2,"Choose either fixed --cam intrinsics or automatic --models initialization");
+      if(!cam_path.empty() && views_option->count()) throw Error(2,"--init-max-views is unused with fixed VI --cam intrinsics");
+      if(bootstrap_option->count()!=bootstrap_block_option->count())
+        throw Error(2,"--vi-bootstrap-replicates and --vi-bootstrap-block-seconds must be provided together");
+      if(bootstrap_seed_option->count() && !bootstrap_option->count())
+        throw Error(2,"--vi-bootstrap-seed requires --vi-bootstrap-replicates");
+    }
+    if(initialize && (target_path.empty() || output_path.empty() || (models.empty() && !(solve_vi && !cam_path.empty()))))
+      throw Error(2,"Camera calibration/initialization requires --target, --models (or VI --cam) and --output");
     if(!initialize && (models_option->count() || views_option->count())) throw Error(2,"--models and --init-max-views require camera calibration or --initialize-only");
-    if(initialize && !cam_path.empty()) throw Error(8,"Initialization from --cam, including rolling shutter input, is not supported yet");
+    if(initialize && !solve_vi && !cam_path.empty()) throw Error(8,"Initialization from --cam, including rolling shutter input, is not supported yet");
     if(initialize) detect=true;
     if(detect && ((target_path.empty() && tag_family.empty()) || output_path.empty())) throw Error(2,"--detect-only requires --output and either --target or diagnostic --tag-family");
     if(border_option->count() && (!detect || tag_family.empty())) throw Error(2,"--tag-border-bits requires diagnostic --tag-family");
@@ -82,6 +112,10 @@ int main(int argc, char** argv) {
     const auto start=std::chrono::steady_clock::now();
     NativeDirectoryReader reader(dataset_path);
     const auto dataset=reader.index(cameras,require_imu);
+    if(solve_vi && dataset.cameras.size()!=1) throw Error(2,"VI calibration requires exactly one selected camera; use --cameras cam0");
+    if(solve_vi && dataset.cameras.front().frames.size()>20000) throw Error(2,"VI observation budget is 20000 frames; select a shorter recording");
+    std::vector<FrameObservations> vi_frames;
+    std::optional<CameraCalibration> vi_camera;
     std::optional<RigViewSampler> rig_sampler;
     if(solve_rig) {
       if(dataset.cameras.size()<2) throw Error(3,"Camera-camera calibration needs at least two selected cameras");
@@ -89,7 +123,7 @@ int main(int argc, char** argv) {
     }
     std::map<std::string,InitialViewSampler> samplers;
     std::vector<DistortionModel> model_kinds;
-    if(initialize) {
+    if(initialize && cam_path.empty()) {
       if(models.size()!=1 && models.size()!=dataset.cameras.size()) throw Error(2,"Provide one --models value for all cameras, or exactly one per selected camera");
       for(std::size_t i=0;i<dataset.cameras.size();++i) {
         const auto& name=models[models.size()==1?0:i];
@@ -100,11 +134,11 @@ int main(int argc, char** argv) {
     }
     Json summary=dataset_summary(dataset);
     summary["schema_version"]=1;
-    summary["mode"]=solve_rig?"camera_camera_calibration":initialize?"initialization":detect?"detection":"dataset_check";
+    summary["mode"]=solve_vi?"camera_imu_calibration":solve_rig?"camera_camera_calibration":initialize?"initialization":detect?"detection":"dataset_check";
     summary["software"]={{"version",CALIB_VERSION},{"apriltag_version",CALIB_APRILTAG_VERSION},{"apriltag_commit",CALIB_APRILTAG_COMMIT}};
     summary["calibration"]={{"status","not_performed"},{"quality","not_assessed"}};
     summary["warnings"]=Json::array({"Structural checks and tag counts do not establish calibration observability or accuracy."});
-    if(require_imu) summary["warnings"].push_back("IMU overlap uses raw timestamps; row timing, offsets, sensor noise and motion excitation are not assessed yet.");
+    if(require_imu && !solve_vi) summary["warnings"].push_back("IMU overlap uses raw timestamps; row timing, offsets, sensor noise and motion excitation are not assessed yet.");
     if(!cam_path.empty()) {
       const auto calibration=read_camchain(cam_path);
       summary["camchain"]=Json::array();
@@ -113,12 +147,16 @@ int main(int argc, char** argv) {
         if(camera==calibration.end()) throw Error(2,"Selected camera missing from camchain: "+stream.id);
         const auto shape=stream.frames.front().image;
         if(shape.width!=camera->width || shape.height!=camera->height) throw Error(2,"Camchain resolution differs from dataset: "+stream.id);
+        if(solve_vi) {
+          if(camera->line_delay_s!=0) throw Error(8,"VI global-shutter solver rejects nonzero line_delay");
+          vi_camera=*camera;
+        }
         summary["camchain"].push_back({{"camera",camera->id},{"camera_model",camera->model},{"distortion_model",camera->distortion},
           {"line_delay_present",camera->has_line_delay},{"line_delay_s",camera->line_delay_s},
           {"readout_time_s",(camera->height-1)*std::abs(camera->line_delay_s)},
           {"shutter",camera->line_delay_s==0?"global":"rolling"},{"time_convention","t_imu = t_image + timeshift_cam_imu + y * line_delay"}});
       }
-      summary["warnings"].push_back("Camchain inspection validates intrinsics and row timing only; extrinsics and offsets are not interpreted yet.");
+      summary["warnings"].push_back(solve_vi?"Camchain supplies fixed intrinsics only; extrinsics and offset are estimated from observations, not imported.":"Camchain inspection validates intrinsics and row timing only; extrinsics and offsets are not interpreted yet.");
     }
     std::optional<Target> target;
     if(detect && !target_path.empty()) target=read_target(target_path);
@@ -204,6 +242,7 @@ int main(int argc, char** argv) {
           if(geometry) {
             const auto& record=result.at("_correspondences");
             accepted_corners+=record["points"].size();
+            if(solve_vi && accepted_corners>3000000) throw Error(2,"VI observation budget is 3000000 corners; select a shorter recording");
             rejected_observation_tags+=record["rejected_tags"].size();
             correspondences << record.dump() << '\n';
             if(initialize) {
@@ -216,7 +255,8 @@ int main(int argc, char** argv) {
                 // A rig validation timestamp must not influence intrinsic initialization.
                 if(rig_sampler->held_out(frame.timestamp_ns)) frame.corners.clear();
               }
-              samplers.at(frame.camera).consider(std::move(frame));
+              if(solve_vi) vi_frames.push_back(frame);
+              if(!vi_camera) samplers.at(frame.camera).consider(std::move(frame));
             }
             result.erase("_correspondences");
           }
@@ -258,7 +298,11 @@ int main(int argc, char** argv) {
     }
     if(initialize) {
       std::vector<InitialCalibration> initial;
-      for(std::size_t begin=0;begin<dataset.cameras.size();begin+=workers) {
+      if(vi_camera) {
+        InitialCalibration supplied; supplied.camera=*vi_camera; initial.push_back(supplied);
+        summary["intrinsics_source"]="provided_camchain_fixed";
+      }
+      for(std::size_t begin=0;!vi_camera && begin<dataset.cameras.size();begin+=workers) {
         std::vector<std::future<InitialCalibration>> tasks;
         for(std::size_t i=begin;i<std::min(begin+workers,dataset.cameras.size());++i) {
           std::cerr<<"Initializing intrinsics for "<<dataset.cameras[i].id<<'\n';
@@ -270,14 +314,45 @@ int main(int argc, char** argv) {
         for(auto& task:tasks) initial.push_back(task.get());
       }
       if(interrupted) throw Error(130,"Initialization interrupted before publication");
-      Json report={{"schema_version",1},{"status","initial_estimates"},{"cameras",Json::array()},
-        {"selection",{{"method","maximum_corners_per_temporal_frame_bin"},{"max_views_per_camera",init_max_views},
-          {"minimum_corners_per_view",12},{"held_out_rule","every fifth selected view"}}}};
-      for(const auto& camera:initial) report["cameras"].push_back(initialization_json(camera));
-      write_json(fs::path(output_path)/"initialization.json",report);
-      write_initial_camchain(fs::path(output_path)/"initial-camchain.yaml",initial);
-      summary["initialization"]={{"status","initial_estimates"},{"report","initialization.json"},{"camchain","initial-camchain.yaml"}};
-      if(solve_rig) {
+      if(!vi_camera) {
+        Json report={{"schema_version",1},{"status","initial_estimates"},{"cameras",Json::array()},
+          {"selection",{{"method","maximum_corners_per_temporal_frame_bin"},{"max_views_per_camera",init_max_views},
+            {"minimum_corners_per_view",12},{"held_out_rule","every fifth selected view"}}}};
+        for(const auto& camera:initial) report["cameras"].push_back(initialization_json(camera));
+        write_json(fs::path(output_path)/"initialization.json",report);
+        write_initial_camchain(fs::path(output_path)/"initial-camchain.yaml",initial);
+        summary["initialization"]={{"status","initial_estimates"},{"report","initialization.json"},{"camchain","initial-camchain.yaml"}};
+      }
+      if(solve_vi) {
+        std::vector<ImuSample> samples;
+        read_imu(dataset.root/"imu0"/"imu0.csv",[&](const ImuSample& sample){
+          if(interrupted) throw Error(130,"Interrupted while loading VI IMU samples");
+          if(samples.size()>=2000000) throw Error(2,"VI sample budget is 2000000 IMU measurements; select a shorter recording");
+          samples.push_back(sample);
+        });
+        vi_options.threads=static_cast<unsigned>(workers);
+        vi_options.cancelled=[]{return interrupted.load(std::memory_order_relaxed);};
+        const auto result=calibrate_vi(*geometry,initial.front().camera,vi_frames,samples,vi_options);
+        if(interrupted) throw Error(130,"Interrupted before VI publication");
+        write_json(fs::path(output_path)/"calibration.json",vi_json(result));
+        write_vi_camchain(fs::path(output_path)/"camchain.yaml",result);
+        write_vi_pdf(fs::path(output_path)/"report.pdf",result);
+        if(!result.bootstrap.is_null()) write_json(fs::path(output_path)/"bootstrap.json",result.bootstrap);
+        const auto& covariance=result.diagnostics.at("covariance");
+        summary["calibration"]={{"status","converged"},{"quality","provisional_not_certified"},
+          {"covariance",covariance.is_object()?covariance.value("status","unavailable"):"unavailable"},
+          {"result","calibration.json"},{"camchain","camchain.yaml"},{"report","report.pdf"}};
+        if(!result.bootstrap.is_null()) summary["calibration"]["bootstrap"]={{"status",result.bootstrap.value("status","unavailable")},
+          {"report","bootstrap.json"},{"qualification","not_qualified_for_default_use"}};
+        if(!result.bootstrap.is_null())
+          summary["warnings"].push_back("Temporal block bootstrap is an unqualified conditional diagnostic; it does not replace the primary covariance.");
+        summary["warnings"].push_back(vi_options.noise.gyroscope_random_walk>0?
+          "GS VI estimate with fixed intrinsics and piecewise-linear random-walk biases; bias-knot sensitivity is not yet qualified.":
+          "GS VI estimate with fixed intrinsics and constant biases because IMU random walks are absent or zero.");
+        if(covariance.is_object() && covariance.value("status","")=="available")
+          summary["warnings"].push_back("Local marginalized covariance is not an accuracy certificate or an independent validation.");
+        else summary["warnings"].push_back("Local marginalized covariance is unavailable; inspect calibration.json observability diagnostics.");
+      } else if(solve_rig) {
         std::cerr<<"Optimizing camera-camera extrinsics and intrinsics\n";
         const auto rig=calibrate_rig(*geometry,initial,rig_sampler->selected(),
           {static_cast<unsigned>(workers),[]{return interrupted.load(std::memory_order_relaxed);}});
